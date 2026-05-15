@@ -1,23 +1,30 @@
 package com.hmdm.launcher.service;
 
 import android.annotation.SuppressLint;
+import android.app.admin.DevicePolicyManager;
 import android.app.Service;
 import android.bluetooth.BluetoothAdapter;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.location.LocationManager;
 import android.net.ConnectivityManager;
 import android.net.wifi.WifiManager;
+import android.os.Build;
 import android.os.IBinder;
+import android.os.UserManager;
 import android.util.Log;
 
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
+import com.hmdm.launcher.AdminReceiver;
 import com.hmdm.launcher.Const;
 import com.hmdm.launcher.helper.SettingsHelper;
 import com.hmdm.launcher.json.ServerConfig;
+import com.hmdm.launcher.policy.LauncherProtectionPolicy;
 import com.hmdm.launcher.util.Utils;
 
 import java.util.Timer;
@@ -35,6 +42,8 @@ public class StatusControlService extends Service {
     private final long ENABLE_CONTROL_DELAY = 60;
 
     private final long STATUS_CHECK_INTERVAL_MS = 10000;
+    private final long LAUNCHER_LOCK_CHECK_INTERVAL_MS = 2000;
+    private final long LOCATION_LOCK_CHECK_INTERVAL_MS = 2000;
 
     private static class PackageInfo {
         public String packageName;
@@ -89,6 +98,10 @@ public class StatusControlService extends Service {
         threadPoolExecutor = new ScheduledThreadPoolExecutor(1);
         threadPoolExecutor.scheduleWithFixedDelay(() -> controlStatus(),
                 STATUS_CHECK_INTERVAL_MS, STATUS_CHECK_INTERVAL_MS, TimeUnit.MILLISECONDS);
+        threadPoolExecutor.scheduleWithFixedDelay(() -> controlLauncherLock(),
+                0, LAUNCHER_LOCK_CHECK_INTERVAL_MS, TimeUnit.MILLISECONDS);
+        threadPoolExecutor.scheduleWithFixedDelay(() -> controlLocationLock(),
+                0, LOCATION_LOCK_CHECK_INTERVAL_MS, TimeUnit.MILLISECONDS);
 
         return Service.START_STICKY;
     }
@@ -187,6 +200,95 @@ public class StatusControlService extends Service {
                     // Some problem access private API
                 }
             }
+        }
+    }
+
+    private void controlLauncherLock() {
+        ServerConfig config = settingsHelper != null ? settingsHelper.getConfig() : null;
+        SharedPreferences customPolicyPrefs = getSharedPreferences("custom_policy", MODE_PRIVATE);
+        boolean lockDefaultLauncher = customPolicyPrefs.getBoolean("lock_default_launcher", false);
+
+        if (config != null) {
+            lockDefaultLauncher = config.isLockDefaultLauncher();
+        }
+
+        if (!lockDefaultLauncher) {
+            return;
+        }
+
+        if (!Utils.isDeviceOwner(this)) {
+            Log.d("LOCK_TEST", "StatusControlService: app is not Device Owner, launcher lock cannot be enforced");
+            return;
+        }
+
+        String defaultLauncher = Utils.getDefaultLauncher(this);
+        if (!getPackageName().equalsIgnoreCase(defaultLauncher)) {
+            Log.d("LOCK_TEST", "StatusControlService: default launcher changed to "
+                    + defaultLauncher + ", restoring Headwind MDM");
+        }
+        LauncherProtectionPolicy.apply(this);
+    }
+
+    private void controlLocationLock() {
+        ServerConfig config = settingsHelper != null ? settingsHelper.getConfig() : null;
+        if (config == null) {
+            return;
+        }
+
+        boolean lockLocationOn = Boolean.TRUE.equals(config.getGps()) ||
+                "gps".equalsIgnoreCase(config.getRequestUpdates());
+
+        if (lockLocationOn) {
+            applyLocationOnPolicy();
+        } else {
+            removeLocationOnPolicy();
+        }
+    }
+
+    private void applyLocationOnPolicy() {
+        if (!Utils.isDeviceOwner(this)) {
+            Log.d("LOCK_TEST", "StatusControlService: app is not Device Owner, location lock cannot be enforced");
+            return;
+        }
+
+        DevicePolicyManager dpm =
+                (DevicePolicyManager) getSystemService(Context.DEVICE_POLICY_SERVICE);
+        if (dpm == null) {
+            return;
+        }
+
+        ComponentName admin = new ComponentName(this, AdminReceiver.class);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                dpm.addUserRestriction(admin, UserManager.DISALLOW_CONFIG_LOCATION);
+                Log.d("LOCK_TEST", "DISALLOW_CONFIG_LOCATION applied");
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                dpm.setLocationEnabled(admin, true);
+                Log.d("LOCK_TEST", "Location enabled by Device Owner");
+            }
+        } catch (Exception e) {
+            Log.e("LOCK_TEST", "Error while applying location lock", e);
+        }
+    }
+
+    private void removeLocationOnPolicy() {
+        if (!Utils.isDeviceOwner(this)) {
+            return;
+        }
+
+        DevicePolicyManager dpm =
+                (DevicePolicyManager) getSystemService(Context.DEVICE_POLICY_SERVICE);
+        if (dpm == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+            return;
+        }
+
+        ComponentName admin = new ComponentName(this, AdminReceiver.class);
+        try {
+            dpm.clearUserRestriction(admin, UserManager.DISALLOW_CONFIG_LOCATION);
+            Log.d("LOCK_TEST", "DISALLOW_CONFIG_LOCATION cleared");
+        } catch (Exception e) {
+            Log.e("LOCK_TEST", "Error while removing location lock", e);
         }
     }
 

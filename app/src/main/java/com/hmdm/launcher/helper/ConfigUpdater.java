@@ -15,6 +15,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import com.hmdm.launcher.policy.LauncherProtectionPolicy;
 
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 
@@ -129,6 +130,7 @@ public class ConfigUpdater {
     }
 
     public void updateConfig(final Context context, final UINotifier uiNotifier, final boolean userInteraction) {
+	Log.d("PUSH_TEST", "updateConfig() called");
         if ( configInitializing ) {
             Log.i(Const.LOG_TAG, "updateConfig(): configInitializing=true, exiting");
             return;
@@ -276,49 +278,74 @@ public class ConfigUpdater {
     }
 
     private void setupPushService() {
-        Log.d(Const.LOG_TAG, "setupPushService() called");
-        String pushOptions = null;
-        int keepaliveTime = Const.DEFAULT_PUSH_ALARM_KEEPALIVE_TIME_SEC;
-        if (settingsHelper != null && settingsHelper.getConfig() != null) {
-            pushOptions = settingsHelper.getConfig().getPushOptions();
-            Integer newKeepaliveTime = settingsHelper.getConfig().getKeepaliveTime();
-            if (newKeepaliveTime != null && newKeepaliveTime >= 30) {
-                keepaliveTime = newKeepaliveTime;
-            }
-        }
-        if (BuildConfig.ENABLE_PUSH && pushOptions != null) {
-            if (pushOptions.equals(ServerConfig.PUSH_OPTIONS_MQTT_WORKER)
-                    || pushOptions.equals(ServerConfig.PUSH_OPTIONS_MQTT_ALARM)) {
-                try {
-                    URL url = new URL(settingsHelper.getBaseUrl());
-                    Runnable nextRunnable = () -> {
-                        checkFactoryReset();
-                    };
-                    PushNotificationMqttWrapper.getInstance().connect(context, url.getHost(), BuildConfig.MQTT_PORT,
-                            pushOptions, keepaliveTime, settingsHelper.getDeviceId(), nextRunnable, nextRunnable);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                    checkFactoryReset();
-                }
-            } else {
-                try {
-                    Intent serviceStartIntent = new Intent(context, PushLongPollingService.class);
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        context.startForegroundService(serviceStartIntent);
-                    } else {
-                        context.startService(serviceStartIntent);
-                    }
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
+    Log.d(Const.LOG_TAG, "setupPushService() called");
+    Log.d("PUSH_TEST", "setupPushService() called");
+    Log.d("PUSH_TEST", "BuildConfig.ENABLE_PUSH = " + BuildConfig.ENABLE_PUSH);
 
-                checkFactoryReset();
-            }
-        } else {
-            checkFactoryReset();
+    String pushOptions = null;
+    int keepaliveTime = Const.DEFAULT_PUSH_ALARM_KEEPALIVE_TIME_SEC;
+
+    if (settingsHelper != null && settingsHelper.getConfig() != null) {
+        pushOptions = settingsHelper.getConfig().getPushOptions();
+        Integer newKeepaliveTime = settingsHelper.getConfig().getKeepaliveTime();
+        if (newKeepaliveTime != null && newKeepaliveTime >= 30) {
+            keepaliveTime = newKeepaliveTime;
         }
     }
 
+    Log.d("PUSH_TEST", "pushOptions = " + pushOptions);
+    Log.d("PUSH_TEST", "keepaliveTime = " + keepaliveTime);
+
+    if (BuildConfig.ENABLE_PUSH && pushOptions != null) {
+        if (pushOptions.equals(ServerConfig.PUSH_OPTIONS_MQTT_WORKER)
+                || pushOptions.equals(ServerConfig.PUSH_OPTIONS_MQTT_ALARM)) {
+            try {
+                URL url = new URL(settingsHelper.getBaseUrl());
+                Runnable nextRunnable = () -> {
+                    checkFactoryReset();
+                };
+
+                Log.d("PUSH_TEST", "Connecting MQTT host = " + url.getHost());
+                Log.d("PUSH_TEST", "MQTT port = " + BuildConfig.MQTT_PORT);
+                Log.d("PUSH_TEST", "Device ID = " + settingsHelper.getDeviceId());
+
+                PushNotificationMqttWrapper.getInstance().connect(
+                        context,
+                        url.getHost(),
+                        BuildConfig.MQTT_PORT,
+                        pushOptions,
+                        keepaliveTime,
+                        settingsHelper.getDeviceId(),
+                        nextRunnable,
+                        nextRunnable
+                );
+            } catch (Exception e) {
+                Log.e("PUSH_TEST", "MQTT setup failed", e);
+                e.printStackTrace();
+                checkFactoryReset();
+            }
+        } else {
+            Log.d("PUSH_TEST", "Using long polling push service");
+
+            try {
+                Intent serviceStartIntent = new Intent(context, PushLongPollingService.class);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(serviceStartIntent);
+                } else {
+                    context.startService(serviceStartIntent);
+                }
+            } catch (Exception e) {
+                Log.e("PUSH_TEST", "Long polling service start failed", e);
+                e.printStackTrace();
+            }
+
+            checkFactoryReset();
+        }
+    } else {
+        Log.d("PUSH_TEST", "Push disabled or pushOptions is null, continuing normal flow");
+        checkFactoryReset();
+    }
+}
     private void checkFactoryReset() {
         Log.d(Const.LOG_TAG, "checkFactoryReset() called");
         ServerConfig config = settingsHelper != null ? settingsHelper.getConfig() : null;
@@ -410,31 +437,85 @@ public class ConfigUpdater {
 
     private void setDefaultLauncher() {
         ServerConfig config = settingsHelper != null ? settingsHelper.getConfig() : null;
+
+        Log.d("LOCK_TEST", "setDefaultLauncher() called");
+
         if (Utils.isDeviceOwner(context) && config != null) {
-            // "Run default launcher" means we should not set Headwind MDM as a default launcher
-            // and clear the setting if it has been already set
-            boolean needSetLauncher = (config.getRunDefaultLauncher() == null || !config.getRunDefaultLauncher());
+            boolean lockDefaultLauncher = config.isLockDefaultLauncher();
+
+            Log.d("LOCK_TEST", "lockDefaultLauncher in setDefaultLauncher = " + lockDefaultLauncher);
+
+            context.getSharedPreferences("custom_policy", Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean("lock_default_launcher", lockDefaultLauncher)
+                    .apply();
+
+            /*
+             * Apply launcher protection immediately after config is available.
+             * Earlier this was only applied in notifyThreads(), which runs very late.
+             * If file/app update flow is delayed, the launcher lock may never apply quickly.
+             */
+            if (lockDefaultLauncher) {
+                Log.d("LOCK_TEST", "Applying launcher protection before default launcher logic");
+                LauncherProtectionPolicy.apply(context);
+            } else {
+                Log.d("LOCK_TEST", "Lock default launcher is false. Removing launcher protection");
+                LauncherProtectionPolicy.remove(context);
+            }
+
+            /*
+             * If lockDefaultLauncher is true, Headwind must be forced as HOME
+             * even if runDefaultLauncher has a different value.
+             */
+            boolean needSetLauncher = lockDefaultLauncher ||
+                    config.getRunDefaultLauncher() == null || !config.getRunDefaultLauncher();
+
             String defaultLauncher = Utils.getDefaultLauncher(context);
 
-            // As per the documentation, setting the default preferred activity should not be done on the main thread
+            Log.d("LOCK_TEST", "needSetLauncher = " + needSetLauncher);
+            Log.d("LOCK_TEST", "current defaultLauncher = " + defaultLauncher);
+            Log.d("LOCK_TEST", "current package = " + context.getPackageName());
+
+            // Setting default preferred activity should not be done on main thread.
             new AsyncTask<Void, Void, Void>() {
                 @Override
                 protected Void doInBackground(Void... voids) {
-                    if (needSetLauncher && !context.getPackageName().equalsIgnoreCase(defaultLauncher)) {
-                        Utils.setDefaultLauncher(context);
-                    } else if (!needSetLauncher && context.getPackageName().equalsIgnoreCase(defaultLauncher)) {
-                        Utils.clearDefaultLauncher(context);
+                    try {
+                        if (needSetLauncher && !context.getPackageName().equalsIgnoreCase(defaultLauncher)) {
+                            Log.d("LOCK_TEST", "Calling Utils.setDefaultLauncher()");
+                            Utils.setDefaultLauncher(context);
+                        } else if (!needSetLauncher && context.getPackageName().equalsIgnoreCase(defaultLauncher)) {
+                            Log.d("LOCK_TEST", "Calling Utils.clearDefaultLauncher()");
+                            Utils.clearDefaultLauncher(context);
+                        } else {
+                            Log.d("LOCK_TEST", "No default launcher change needed");
+                        }
+                    } catch (Exception e) {
+                        Log.e("LOCK_TEST", "Error while setting/clearing default launcher", e);
                     }
+
                     return null;
                 }
 
                 @Override
                 protected void onPostExecute(Void v) {
+                    /*
+                     * Apply again after Utils.setDefaultLauncher().
+                     * This makes sure the custom persistent HOME policy wins.
+                     */
+                    if (lockDefaultLauncher) {
+                        Log.d("LOCK_TEST", "Re-applying launcher protection after default launcher logic");
+                        LauncherProtectionPolicy.apply(context);
+                    }
+
                     updatePolicies();
                 }
             }.execute();
+
             return;
         }
+
+        Log.d("LOCK_TEST", "Not Device Owner or config is null. Skipping launcher lock.");
         updatePolicies();
     }
 
@@ -938,11 +1019,26 @@ public class ConfigUpdater {
 
     private void notifyThreads() {
         ServerConfig config = settingsHelper.getConfig();
+
         if (config != null) {
             Intent intent = new Intent(Const.ACTION_TOGGLE_PERMISSIVE);
             intent.putExtra(Const.EXTRA_ENABLED, config.isPermissive() || config.isKioskMode());
             LocalBroadcastManager.getInstance(context).sendBroadcast(intent);
+
+            boolean lockDefaultLauncher = config.isLockDefaultLauncher();
+
+            context.getSharedPreferences("custom_policy", Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean("lock_default_launcher", lockDefaultLauncher)
+                    .apply();
+
+            if (lockDefaultLauncher) {
+                LauncherProtectionPolicy.apply(context);
+            } else {
+                LauncherProtectionPolicy.remove(context);
+            }
         }
+
         setActions();
     }
 

@@ -95,6 +95,7 @@ public class ServerConfig {
     private String custom3;
 
     private Boolean runDefaultLauncher;
+    private boolean lockDefaultLauncher;
 
     private String newServerUrl;
 
@@ -277,6 +278,9 @@ public class ServerConfig {
 
     public boolean isKioskMode() {
         return kioskMode != null && kioskMode;
+    }
+    public boolean isLockDefaultLauncher() {
+        return lockDefaultLauncher;
     }
 
     public void setKioskMode(Boolean kioskMode) {
@@ -585,6 +589,10 @@ public class ServerConfig {
 
     public void setRunDefaultLauncher(Boolean runDefaultLauncher) {
         this.runDefaultLauncher = runDefaultLauncher;
+    }
+
+    public void setLockDefaultLauncher(boolean lockDefaultLauncher) {
+        this.lockDefaultLauncher = lockDefaultLauncher;
     }
 
     public String getNewServerUrl() {

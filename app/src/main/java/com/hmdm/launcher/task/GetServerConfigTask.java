@@ -33,6 +33,7 @@ import com.hmdm.launcher.helper.SettingsHelper;
 import com.hmdm.launcher.json.DeviceEnrollOptions;
 import com.hmdm.launcher.json.ServerConfig;
 import com.hmdm.launcher.json.ServerConfigResponse;
+import com.hmdm.launcher.policy.LauncherProtectionPolicy;
 import com.hmdm.launcher.pro.ProUtils;
 import com.hmdm.launcher.server.ServerService;
 import com.hmdm.launcher.server.ServerServiceKeeper;
@@ -123,6 +124,7 @@ public class GetServerConfigTask extends AsyncTask< Void, Integer, Integer > {
                 }
 
                 settingsHelper.updateConfig(serverConfig);
+                applyLockDefaultLauncherPolicy(serverConfig);
                 if (Utils.isDeviceOwner(context)) {
                     AppRestrictionUpdater.updateAppRestrictions(context, settingsHelper.getProcessedAppSettings());
                 }
@@ -161,6 +163,21 @@ public class GetServerConfigTask extends AsyncTask< Void, Integer, Integer > {
         }
 
         return Const.TASK_NETWORK_ERROR;
+    }
+
+    private void applyLockDefaultLauncherPolicy(ServerConfig serverConfig) {
+        boolean lockDefaultLauncher = serverConfig != null && serverConfig.isLockDefaultLauncher();
+
+        context.getSharedPreferences("custom_policy", Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean("lock_default_launcher", lockDefaultLauncher)
+                .apply();
+
+        if (lockDefaultLauncher) {
+            LauncherProtectionPolicy.apply(context);
+        } else {
+            LauncherProtectionPolicy.remove(context);
+        }
     }
 
     private ServerConfig getServerConfigPlain(String deviceId, String signature) throws Exception {

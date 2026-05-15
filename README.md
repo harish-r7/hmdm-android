@@ -1,4 +1,4 @@
-# Headwind MDM: free and open-source MDM launcher
+adb install -r "e:\mdm\hmdm-android\app\build\outputs\apk\opensource\debug\app-opensource-debug.apk"# Headwind MDM: free and open-source MDM launcher
 
 A Powerful Open Source Platform to Manage your Enterprise Android Devices
 

@@ -26,6 +26,7 @@ import android.bluetooth.BluetoothAdapter;
 import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
@@ -97,6 +98,7 @@ import com.hmdm.launcher.json.Application;
 import com.hmdm.launcher.json.DeviceInfo;
 import com.hmdm.launcher.json.RemoteFile;
 import com.hmdm.launcher.json.ServerConfig;
+import com.hmdm.launcher.policy.LauncherProtectionPolicy;
 import com.hmdm.launcher.pro.ProUtils;
 import com.hmdm.launcher.pro.service.CheckForegroundAppAccessibilityService;
 import com.hmdm.launcher.pro.service.CheckForegroundApplicationService;
@@ -500,35 +502,61 @@ public class MainActivity
     }
 
     @Override
-    protected void onResume() {
-        super.onResume();
+protected void onResume() {
+    super.onResume();
 
-        isBackground = false;
+    SharedPreferences customPolicyPrefs =
+            getSharedPreferences("custom_policy", MODE_PRIVATE);
 
-        // On some Android firmwares, onResume is called before onCreate, so the fields are not initialized
-        // Here we initialize all required fields to avoid crash at startup
-        reinitApp();
+    boolean hasLockDefaultLauncherValue =
+            customPolicyPrefs.contains("lock_default_launcher");
 
-        statusBarUpdater.startUpdating(this, binding.clock, binding.batteryState);
+    boolean lockDefaultLauncher =
+            customPolicyPrefs.getBoolean("lock_default_launcher", false);
 
-        startServicesWithRetry();
+    Log.d("LOCK_TEST", "MainActivity onResume()");
+    Log.d("LOCK_TEST", "has lock_default_launcher value = " + hasLockDefaultLauncherValue);
+    Log.d("LOCK_TEST", "lock_default_launcher value = " + lockDefaultLauncher);
 
-        if (interruptResumeFlow) {
-            interruptResumeFlow = false;
-            return;
-        }
-
-        if (!BuildConfig.SYSTEM_PRIVILEGES) {
-            if (firstStartAfterProvisioning) {
-                firstStartAfterProvisioning = false;
-                waitForProvisioning(10);
-            } else {
-                setDefaultLauncherEarly();
-            }
-        } else {
-            setSelfAsDeviceOwner();
-        }
+    /*
+     * IMPORTANT:
+     * Do NOT remove launcher protection from onResume when value is false.
+     * The false value may be old/stale before fresh config sync.
+     * ConfigUpdater should decide when to remove/apply after receiving server config.
+     */
+    if (hasLockDefaultLauncherValue && lockDefaultLauncher) {
+        Log.d("LOCK_TEST", "MainActivity applying launcher protection");
+        LauncherProtectionPolicy.apply(this);
+    } else {
+        Log.d("LOCK_TEST", "MainActivity not removing launcher protection from onResume");
     }
+
+    isBackground = false;
+
+    // On some Android firmwares, onResume is called before onCreate, so the fields are not initialized
+    // Here we initialize all required fields to avoid crash at startup
+    reinitApp();
+
+    statusBarUpdater.startUpdating(this, binding.clock, binding.batteryState);
+
+    startServicesWithRetry();
+
+    if (interruptResumeFlow) {
+        interruptResumeFlow = false;
+        return;
+    }
+
+    if (!BuildConfig.SYSTEM_PRIVILEGES) {
+        if (firstStartAfterProvisioning) {
+            firstStartAfterProvisioning = false;
+            waitForProvisioning(10);
+        } else {
+            setDefaultLauncherEarly();
+        }
+    } else {
+        setSelfAsDeviceOwner();
+    }
+}
 
     private void lockOrientation() {
         int orientation = getResources().getConfiguration().orientation;
@@ -653,6 +681,75 @@ public class MainActivity
             }
         }.execute();
     }
+
+    private boolean startHeadwindSelfKiosk(ServerConfig config) {
+    try {
+        Log.d("KIOSK_TEST", "startHeadwindSelfKiosk() called");
+
+        if (config == null) {
+            Log.d("KIOSK_TEST", "Config is null, cannot start kiosk");
+            return false;
+        }
+
+        Log.d("KIOSK_TEST", "kioskMode = " + config.isKioskMode());
+        Log.d("KIOSK_TEST", "mainApp = " + config.getMainApp());
+        Log.d("KIOSK_TEST", "package = " + getPackageName());
+
+        if (!config.isKioskMode()) {
+            Log.d("KIOSK_TEST", "Kiosk mode is false, skipping self kiosk");
+            return false;
+        }
+
+        String kioskApp = config.getMainApp();
+
+        if (kioskApp == null || kioskApp.trim().length() == 0) {
+            Log.d("KIOSK_TEST", "Main app is empty, skipping self kiosk");
+            return false;
+        }
+
+        if (!kioskApp.equals(getPackageName())) {
+            Log.d("KIOSK_TEST", "Kiosk app is not Headwind itself, skipping self kiosk");
+            return false;
+        }
+
+        if (!Utils.isDeviceOwner(this)) {
+            Log.d("KIOSK_TEST", "Not Device Owner, cannot start lock task kiosk");
+            return false;
+        }
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.LOLLIPOP) {
+            Log.d("KIOSK_TEST", "Android version below Lollipop, lock task not supported");
+            return false;
+        }
+
+        DevicePolicyManager dpm =
+                (DevicePolicyManager) getSystemService(Context.DEVICE_POLICY_SERVICE);
+
+        if (dpm == null) {
+            Log.d("KIOSK_TEST", "DevicePolicyManager is null");
+            return false;
+        }
+
+        ComponentName admin =
+                new ComponentName(this, AdminReceiver.class);
+
+        dpm.setLockTaskPackages(admin, new String[]{getPackageName()});
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            dpm.setLockTaskFeatures(admin, DevicePolicyManager.LOCK_TASK_FEATURE_NONE);
+            Log.d("KIOSK_TEST", "Lock task features set to NONE");
+        }
+
+        startLockTask();
+
+        Log.d("KIOSK_TEST", "Headwind self kiosk lock-task started successfully");
+        return true;
+
+    } catch (Exception e) {
+        Log.e("KIOSK_TEST", "Failed to start Headwind self kiosk", e);
+        return false;
+    }
+}
 
     private void startServices() {
         // Foreground apps checks are not available in a free version: services are the stubs
