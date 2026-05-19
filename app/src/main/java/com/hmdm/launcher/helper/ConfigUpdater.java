@@ -39,6 +39,7 @@ import com.hmdm.launcher.task.ConfirmPasswordResetTask;
 import com.hmdm.launcher.task.ConfirmRebootTask;
 import com.hmdm.launcher.task.GetRemoteLogConfigTask;
 import com.hmdm.launcher.task.GetServerConfigTask;
+import com.hmdm.launcher.task.SendDeviceInfoTask;
 import com.hmdm.launcher.util.DeviceInfoProvider;
 import com.hmdm.launcher.util.InstallUtils;
 import com.hmdm.launcher.util.PushNotificationMqttWrapper;
@@ -58,6 +59,7 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class ConfigUpdater {
 
@@ -82,6 +84,7 @@ public class ConfigUpdater {
         void onAllAppInstallComplete();
     };
 
+    private static final AtomicBoolean configUpdateInProgress = new AtomicBoolean(false);
     private boolean configInitializing;
     private Context context;
     private UINotifier uiNotifier;
@@ -102,14 +105,16 @@ public class ConfigUpdater {
     }
 
     public static void notifyConfigUpdate(final Context context) {
-        if (SettingsHelper.getInstance(context).isMainActivityRunning()) {
-            Log.d(Const.LOG_TAG, "Main activity is running, using activity updater");
+        boolean mainActivityRunning = SettingsHelper.getInstance(context).isMainActivityRunning();
+        if (mainActivityRunning) {
+            Log.d(Const.LOG_TAG, "Main activity is running, broadcasting update configuration");
             LocalBroadcastManager.getInstance(context).
                     sendBroadcast(new Intent(Const.ACTION_UPDATE_CONFIGURATION));
         } else {
             Log.d(Const.LOG_TAG, "Main activity is not running, creating a new ConfigUpdater");
-            new ConfigUpdater(context).updateConfig(context, null, false);
         }
+
+        new ConfigUpdater(context).updateConfig(context, null, false);
     }
 
     public static void forceConfigUpdate(final Context context) {
@@ -131,13 +136,14 @@ public class ConfigUpdater {
 
     public void updateConfig(final Context context, final UINotifier uiNotifier, final boolean userInteraction) {
 	Log.d("PUSH_TEST", "updateConfig() called");
-        if ( configInitializing ) {
-            Log.i(Const.LOG_TAG, "updateConfig(): configInitializing=true, exiting");
+        if (configInitializing || configUpdateInProgress.get()) {
+            Log.i(Const.LOG_TAG, "updateConfig(): already in progress, exiting");
             return;
         }
 
         Log.i(Const.LOG_TAG, "updateConfig(): set configInitializing=true");
         configInitializing = true;
+        configUpdateInProgress.set(true);
         DetailedInfoWorker.requestConfigUpdate(context);
         this.context = context;
         this.uiNotifier = uiNotifier;
@@ -160,6 +166,7 @@ public class ConfigUpdater {
             protected void onPostExecute( Integer result ) {
                 super.onPostExecute( result );
                 configInitializing = false;
+                configUpdateInProgress.set(false);
                 Log.i(Const.LOG_TAG, "updateConfig(): set configInitializing=false after getting config");
 
                 switch ( result ) {
@@ -297,6 +304,8 @@ public class ConfigUpdater {
     Log.d("PUSH_TEST", "keepaliveTime = " + keepaliveTime);
 
     if (BuildConfig.ENABLE_PUSH && pushOptions != null) {
+        startLongPollingPushService();
+
         if (pushOptions.equals(ServerConfig.PUSH_OPTIONS_MQTT_WORKER)
                 || pushOptions.equals(ServerConfig.PUSH_OPTIONS_MQTT_ALARM)) {
             try {
@@ -325,20 +334,6 @@ public class ConfigUpdater {
                 checkFactoryReset();
             }
         } else {
-            Log.d("PUSH_TEST", "Using long polling push service");
-
-            try {
-                Intent serviceStartIntent = new Intent(context, PushLongPollingService.class);
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(serviceStartIntent);
-                } else {
-                    context.startService(serviceStartIntent);
-                }
-            } catch (Exception e) {
-                Log.e("PUSH_TEST", "Long polling service start failed", e);
-                e.printStackTrace();
-            }
-
             checkFactoryReset();
         }
     } else {
@@ -346,6 +341,23 @@ public class ConfigUpdater {
         checkFactoryReset();
     }
 }
+
+    private void startLongPollingPushService() {
+        Log.d("PUSH_TEST", "Starting long polling push service");
+
+        try {
+            Intent serviceStartIntent = new Intent(context, PushLongPollingService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(serviceStartIntent);
+            } else {
+                context.startService(serviceStartIntent);
+            }
+        } catch (Exception e) {
+            Log.e("PUSH_TEST", "Long polling service start failed", e);
+            e.printStackTrace();
+        }
+    }
+
     private void checkFactoryReset() {
         Log.d(Const.LOG_TAG, "checkFactoryReset() called");
         ServerConfig config = settingsHelper != null ? settingsHelper.getConfig() : null;
@@ -1064,6 +1076,10 @@ public class ConfigUpdater {
             protected void onPostExecute(Void v) {
                 if (uiNotifier != null) {
                     uiNotifier.onConfigUpdateComplete();
+                } else {
+                    SendDeviceInfoTask sendDeviceInfoTask = new SendDeviceInfoTask(context);
+                    DeviceInfo deviceInfo = DeviceInfoProvider.getDeviceInfo(context, true, true);
+                    sendDeviceInfoTask.execute(deviceInfo);
                 }
 
                 // Send notification about the configuration update to all plugins
